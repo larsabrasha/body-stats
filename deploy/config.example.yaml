@@ -18,6 +18,12 @@ mqtt:
   discovery_prefix: homeassistant
   device_name: Wii Balance Board
   tls: false
+  # Identifies this bridge to the broker. Change it if you run two of them
+  # against the same broker, or the second one will kick the first offline.
+  client_id: wiiscale
+  keepalive: 60
+  # Shortest gap between live publishes (occupancy and current load).
+  live_interval_seconds: 0.5
 
 board:
   # Substring matched against evdev device names. The kernel calls the board

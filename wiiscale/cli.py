@@ -26,26 +26,44 @@ def _setup_logging(level: str) -> None:
     )
 
 
+def _add_common_options(parser: argparse.ArgumentParser, *, root: bool) -> None:
+    """Add --config/--log-level so they work on either side of the subcommand.
+
+    The subcommand copies default to SUPPRESS: without it argparse would run
+    the subparser second and overwrite whatever ``wiiscale --config X run``
+    had already put in the namespace with the default again.
+    """
+    parser.add_argument(
+        "-c",
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH if root else argparse.SUPPRESS,
+        help=f"path to the YAML config file (default: {DEFAULT_CONFIG_PATH})",
+    )
+    parser.add_argument(
+        "--log-level",
+        default=None if root else argparse.SUPPRESS,
+        help="override logging.level from the config",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="wiiscale",
         description="Bridge a Wii Balance Board to Home Assistant over MQTT.",
     )
     parser.add_argument("--version", action="version", version=f"wiiscale {__version__}")
-    parser.add_argument(
-        "-c",
-        "--config",
-        type=Path,
-        default=DEFAULT_CONFIG_PATH,
-        help=f"path to the YAML config file (default: {DEFAULT_CONFIG_PATH})",
-    )
-    parser.add_argument("--log-level", help="override logging.level from the config")
+    _add_common_options(parser, root=True)
 
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("run", help="run the bridge (default)")
-    sub.add_parser("monitor", help="print live readings without touching MQTT")
-    sub.add_parser("devices", help="list candidate input devices")
-    sub.add_parser("config", help="print the effective configuration")
+    commands = {
+        "run": "run the bridge (default)",
+        "monitor": "print live readings without touching MQTT",
+        "devices": "list candidate input devices",
+        "config": "print the effective configuration",
+    }
+    for name, help_text in commands.items():
+        _add_common_options(sub.add_parser(name, help=help_text), root=False)
     return parser
 
 
