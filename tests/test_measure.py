@@ -128,11 +128,67 @@ def test_auto_tare_ignores_something_left_on_the_board():
     assert tracker.tare_kg == 0.0
 
 
-def test_occupied_tracks_the_settling_state():
+def test_occupied_turns_on_when_somebody_steps_on():
     tracker = MeasurementTracker(config())
     assert tracker.occupied is False
     feed_for(tracker, 70.0, seconds=0.5)
     assert tracker.occupied is True
+
+
+def test_occupied_stays_on_while_standing_there_after_the_weighing():
+    """Regression: occupied used to mean "settling", so it went off the moment
+    the weighing published, reporting an empty board with someone on it."""
+    tracker = MeasurementTracker(config())
+    results, timestamp = feed_for(tracker, 82.4, seconds=3.0)
+    assert len(results) == 1
+    assert tracker.state is State.COOLDOWN
+
+    feed_for(tracker, 82.4, seconds=2.0, start=timestamp)
+    assert tracker.occupied is True
+
+
+def test_occupied_turns_off_after_stepping_off():
+    tracker = MeasurementTracker(config())
+    _, timestamp = feed_for(tracker, 82.4, seconds=3.0)
+    feed_for(tracker, 0.0, seconds=1.0, start=timestamp)
+    assert tracker.occupied is False
+
+
+def test_occupied_does_not_flap_at_the_threshold():
+    # Between step_off (3.0) and step_on (5.0): whatever it was, it stays.
+    tracker = MeasurementTracker(config())
+    feed_for(tracker, 4.0, seconds=1.0)
+    assert tracker.occupied is False
+
+    _, timestamp = feed_for(tracker, 82.4, seconds=3.0)
+    feed_for(tracker, 4.0, seconds=1.0, start=timestamp)
+    assert tracker.occupied is True
+
+
+def test_timeout_publishes_even_when_the_window_never_fills():
+    """Regression: a board reporting slower than min_samples/window_seconds
+    never satisfied "full", so the settle timeout dropped the weighing
+    silently and Home Assistant saw nothing at all."""
+    tracker = MeasurementTracker(
+        config(window_seconds=1.0, min_samples=10, settle_timeout_seconds=5.0)
+    )
+    # 5 Hz over a 1 s window is at most 6 samples — min_samples is never met.
+    results, _ = feed_for(tracker, 82.4, seconds=8.0, jitter=0.5, rate=5.0)
+
+    assert len(results) == 1
+    assert results[0].stable is False
+    assert results[0].quality <= 50
+    assert results[0].sample_count < 10
+    assert results[0].weight_kg == pytest.approx(82.4, abs=0.6)
+
+
+def test_timeout_drops_a_weighing_with_too_few_samples_to_mean_anything():
+    tracker = MeasurementTracker(
+        config(window_seconds=1.0, min_samples=10, settle_timeout_seconds=2.0)
+    )
+    # One sample per two seconds: the window holds at most one sample at a time.
+    results, _ = feed_for(tracker, 82.4, seconds=12.0, rate=0.5)
+    assert results == []
 
 
 def test_trimmed_mean_drops_the_extremes():

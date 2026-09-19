@@ -9,12 +9,25 @@ other, then reduces that window to one number and scores how much it agreed.
 from __future__ import annotations
 
 import statistics
+import time
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Deque, List, Optional, Sequence, Tuple
+from typing import Any, ClassVar, Deque, Dict, List, Optional, Sequence, Tuple
 
 from .config import MeasurementConfig
+
+
+def monotonic_to_iso(monotonic_timestamp: float) -> str:
+    """Convert a time.monotonic() stamp to a wall-clock ISO 8601 string.
+
+    Samples are stamped with the monotonic clock so that durations stay correct
+    across NTP steps; anything outside this module wants a real date, so the
+    offset between the two clocks is applied on the way out.
+    """
+    wall = time.time() - (time.monotonic() - monotonic_timestamp)
+    return datetime.fromtimestamp(wall, tz=timezone.utc).isoformat(timespec="seconds")
 
 
 @dataclass(frozen=True)
@@ -44,6 +57,52 @@ class Measurement:
     sensors_kg: Tuple[float, float, float, float]
     tare_kg: float
     stable: bool
+
+    #: JSON key -> field name. The published payload and the Home Assistant
+    #: value templates are both derived from this, so a new field on a weighing
+    #: is spelled out here once instead of in three places that must agree.
+    PAYLOAD_FIELDS: ClassVar[Dict[str, str]] = {
+        "weight": "weight_kg",
+        "quality": "quality",
+        "stable": "stable",
+        "spread": "spread_kg",
+        "std_dev": "std_dev_kg",
+        "samples": "sample_count",
+        "duration": "duration_s",
+        "settle_time": "settle_s",
+        "sensors": "sensors_kg",
+        "tare": "tare_kg",
+        "timestamp": "timestamp",
+    }
+
+    def as_payload(self) -> Dict[str, Any]:
+        """The JSON body of a published weighing."""
+        payload: Dict[str, Any] = {
+            key: getattr(self, name) for key, name in self.PAYLOAD_FIELDS.items()
+        }
+        # JSON has no tuple, and the monotonic stamp means nothing outside this
+        # process.
+        payload[self.payload_key("sensors_kg")] = list(self.sensors_kg)
+        payload[self.payload_key("timestamp")] = monotonic_to_iso(self.timestamp)
+        return payload
+
+    @classmethod
+    def payload_key(cls, field_name: str) -> str:
+        """The JSON key a field is published under.
+
+        Callers building templates against the payload go through this, so
+        renaming a field breaks loudly here instead of quietly producing a
+        Home Assistant entity that never updates.
+        """
+        for key, name in cls.PAYLOAD_FIELDS.items():
+            if name == field_name:
+                return key
+        raise KeyError(f"{field_name} is not published")
+
+
+# Below this, spread and standard deviation say nothing about the reading, so
+# a timed-out weighing is dropped rather than published as a number.
+MIN_PUBLISHABLE_SAMPLES = 2
 
 
 class State(Enum):
@@ -125,6 +184,7 @@ class MeasurementTracker:
         self._zero_samples: Deque[float] = deque()
         self._settle_start: Optional[float] = None
         self._empty_since: Optional[float] = None
+        self._occupied = False
 
     # -- introspection -------------------------------------------------
 
@@ -134,7 +194,13 @@ class MeasurementTracker:
 
     @property
     def occupied(self) -> bool:
-        return self.state is State.SETTLING
+        """Is there weight on the board right now?
+
+        Deliberately independent of the state machine: a weighing finishes and
+        enters COOLDOWN while the user is still standing there, so tying this
+        to SETTLING would report the board as empty with someone on it.
+        """
+        return self._occupied
 
     def adjusted_total(self, sample: Sample) -> float:
         return sample.total - self._tare
@@ -144,6 +210,7 @@ class MeasurementTracker:
     def feed(self, sample: Sample) -> Optional[Measurement]:
         """Consume one sample; return a Measurement when one just completed."""
         total = self.adjusted_total(sample)
+        self._update_occupied(total)
 
         if self.state is State.IDLE:
             self._track_zero(sample)
@@ -171,6 +238,17 @@ class MeasurementTracker:
 
     # -- internals -----------------------------------------------------
 
+    def _update_occupied(self, total: float) -> None:
+        """Track load with hysteresis, using the same thresholds as the states.
+
+        Two thresholds rather than one so a load hovering at the boundary
+        cannot flap the binary sensor on and off in Home Assistant.
+        """
+        if self._occupied:
+            self._occupied = total >= self.config.step_off_threshold_kg
+        else:
+            self._occupied = total >= self.config.step_on_threshold_kg
+
     def _feed_settling(self, sample: Sample, total: float) -> Optional[Measurement]:
         if total < self.config.step_off_threshold_kg:
             # Stepped off before anything settled: nothing worth publishing.
@@ -192,9 +270,12 @@ class MeasurementTracker:
                 return self._finalise(sample.timestamp, stable=True)
 
         if elapsed >= self.config.settle_timeout_seconds:
-            if full:
-                # Never held still, but we have a full window — publish it with
-                # a capped quality score so automations can filter it out.
+            # Never held still. Publish whatever the window holds anyway, with
+            # a quality score capped at 50 so automations can filter it out —
+            # a weak reading beats Home Assistant seeing no weighing at all.
+            # A board reporting slower than min_samples/window_seconds never
+            # fills the window, and used to fall through here silently.
+            if len(self._window.samples) >= MIN_PUBLISHABLE_SAMPLES:
                 return self._finalise(sample.timestamp, stable=False)
             self._enter_cooldown()
 
@@ -258,3 +339,4 @@ class MeasurementTracker:
         self._zero_samples.clear()
         self._settle_start = None
         self._empty_since = None
+        self._occupied = False
