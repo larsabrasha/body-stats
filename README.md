@@ -9,6 +9,15 @@ Home Assistant via MQTT med auto-discovery. Inget att lägga till i
 
 Du kliver upp på brädan, står still ett par sekunder, kliver av. Klart.
 
+## Hårdvara
+
+Kör på en **Raspberry Pi Zero WH** — billigast, minst, och koden i det här
+repot funkar oförändrad. En 3B+ går förstås också bra men är overkill.
+[docs/hardware.md](docs/hardware.md) går igenom valet, inklusive varför en
+ESP32 (M5Stack Atom Lite, M5StickC Plus) är möjlig men betyder att du får
+skriva firmware själv — och vilka ESP32-varianter som inte kan prata med
+brädan alls.
+
 ## Varför Raspberry Pi och inte en Mac-app
 
 Linux har redan en drivrutin för hårdvaran, `hid-wiimote`. När brädan är parad
