@@ -68,18 +68,47 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_devices(config: Config) -> int:
-    from .board import candidate_devices
+    from .backend import describe_boards
 
-    devices = candidate_devices()
-    if not devices:
+    listing = describe_boards(config.board)
+    if listing is None:
+        print(
+            f"The l2cap backend connects straight to board.address "
+            f"({config.board.address}); there is nothing to enumerate.\n"
+            "List paired and nearby boards with:\n"
+            "    bluetoothctl devices | grep RVL-WBC"
+        )
+        return 0
+    if not listing:
         print("No balance board found. Is it connected? See docs/pairing.md")
         return 1
-    for device in devices:
-        marker = "*" if config.board.device_name.lower() in device.name.lower() else " "
-        print(f"{marker} {device.path}  {device.name}")
-        device.close()
+    print(listing)
     print("\n(* = matches board.device_name in the config)")
     return 0
+
+
+def _print_stream(board, tracker) -> None:
+    """Print one connected board's readings until it goes away."""
+    for sample in board.stream(timeout=1.0):
+        if sample is None:
+            continue
+        measurement = tracker.feed(sample)
+        total = tracker.adjusted_total(sample)
+        cells = " ".join(f"{v:6.2f}" for v in sample.sensors)
+        print(
+            f"\r{tracker.state.value:9s} total {total:7.2f} kg  "
+            f"tare {tracker.tare_kg:5.2f}  cells [{cells}]",
+            end="",
+            flush=True,
+        )
+        if measurement is not None:
+            print(
+                f"\n>>> {measurement.weight_kg:.2f} kg  "
+                f"quality {measurement.quality}%  "
+                f"spread {measurement.spread_kg:.3f} kg  "
+                f"{measurement.sample_count} samples in {measurement.settle_s:.1f} s"
+                f"{'' if measurement.stable else '  (never settled)'}\n"
+            )
 
 
 def cmd_monitor(config: Config) -> int:
@@ -87,42 +116,29 @@ def cmd_monitor(config: Config) -> int:
 
     Useful for checking that the board reads ~0.00 kg when empty and that a
     known weight comes out right before wiring anything to Home Assistant.
+
+    Like the daemon, this waits for the board again when it disconnects. The
+    board powers itself down between weighings, so treating a disconnect as
+    the end of the session would make monitor quit every time you step off.
     """
-    from .board import wait_for_board
+    from .backend import wait_for_board
     from .measure import MeasurementTracker
 
-    board = None
+    tracker = MeasurementTracker(config.measurement)
     try:
-        board = wait_for_board(config.board)
-        if board is None:
-            return 1
-        tracker = MeasurementTracker(config.measurement)
-        print(f"Reading {board.name} ({board.path}). Ctrl-C to stop.\n")
-        for sample in board.stream(timeout=1.0):
-            if sample is None:
-                continue
-            measurement = tracker.feed(sample)
-            total = tracker.adjusted_total(sample)
-            cells = " ".join(f"{v:6.2f}" for v in sample.sensors)
-            print(
-                f"\r{tracker.state.value:9s} total {total:7.2f} kg  "
-                f"tare {tracker.tare_kg:5.2f}  cells [{cells}]",
-                end="",
-                flush=True,
-            )
-            if measurement is not None:
-                print(
-                    f"\n>>> {measurement.weight_kg:.2f} kg  "
-                    f"quality {measurement.quality}%  "
-                    f"spread {measurement.spread_kg:.3f} kg  "
-                    f"{measurement.sample_count} samples in {measurement.settle_s:.1f} s"
-                    f"{'' if measurement.stable else '  (TIMED OUT, never settled)'}\n"
-                )
+        while True:
+            board = wait_for_board(config.board)
+            if board is None:
+                return 1
+            try:
+                print(f"Reading {board.name} ({board.path}). Ctrl-C to stop.\n")
+                _print_stream(board, tracker)
+            finally:
+                board.close()
+            tracker.reset()
+            print("\nBoard disconnected. Waiting for it to come back.\n")
     except KeyboardInterrupt:
         print()
-    finally:
-        if board is not None:
-            board.close()
     return 0
 
 

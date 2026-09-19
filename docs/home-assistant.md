@@ -45,11 +45,14 @@ It scores how tightly the samples in the measurement window agreed:
 - **100** — dead still.
 - **80** — exactly at `stability_tolerance_kg`, the loosest window still
   accepted as stable.
-- **≤ 50** — the weighing never settled and was published when
-  `settle_timeout_seconds` ran out. Treat these with suspicion.
+- **≤ 50** — the weighing never settled. It was published anyway, either
+  because you stepped off or because `settle_timeout_seconds` ran out, using
+  the steadiest window of the visit. Treat these with suspicion, but note that
+  for somebody who never manages to stand still these are the only readings
+  there will ever be.
 
 `stable` says the same thing as a boolean: `true` means the window held still
-on its own, `false` means the timeout forced it out.
+on its own, `false` means it was published without ever settling.
 
 ## Only recording measurements you trust
 

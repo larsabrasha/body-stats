@@ -21,6 +21,39 @@ echo "==> Installing system packages"
 apt-get update -qq
 apt-get install -y -qq python3-venv python3-dev bluez
 
+echo "==> Preparing Bluetooth and the board driver"
+# Load hid-wiimote now and on every boot. Order matters: if the board connects
+# before this module is available, the kernel's built-in hid_generic claims it
+# and you get a HID device without the load-cell axes.
+modprobe hid-wiimote || echo "    WARNING: could not load hid-wiimote; see docs/pairing.md"
+echo hid-wiimote > /etc/modules-load.d/wiiscale.conf
+
+# An rfkill-blocked adapter reports 'Failed to set mode: Failed (0x03)', which
+# reads like a firmware fault. Clear it here so it never gets diagnosed twice.
+if command -v rfkill >/dev/null && rfkill list bluetooth | grep -q "Soft blocked: yes"; then
+    echo "    Bluetooth was rfkill-blocked; unblocking"
+    rfkill unblock bluetooth
+fi
+
+# BlueZ deleted its wiimote plugin in 5.80, and without it the board asks for a
+# PIN nobody can type, so pairing cannot complete. Warn loudly rather than let
+# it look like a hardware fault later.
+# This starts a second bluetoothd alongside the running one; it gets far enough
+# to log its plugin list before failing on the management socket. If it does not
+# get that far we learn nothing, so only warn when the probe actually worked.
+plugin_probe="$(timeout 5 /usr/libexec/bluetooth/bluetoothd -n -d 2>&1 || true)"
+if grep -q "Loading .* plugin" <<<"$plugin_probe"; then
+    if ! grep -qi "Loading wiimote plugin" <<<"$plugin_probe"; then
+        echo "    NOTE: this bluetoothd has no wiimote plugin (removed upstream in"
+        echo "          BlueZ 5.80). The board cannot be paired here at all."
+        echo "          Weighing still works - set board.backend to l2cap, which"
+        echo "          needs no pairing - but you must press SYNC each time."
+        echo "          Raspberry Pi OS bookworm has the plugin. See docs/pairing.md."
+    fi
+else
+    echo "    (could not determine whether bluetoothd has the wiimote plugin)"
+fi
+
 echo "==> Creating service user '$SERVICE_USER'"
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
     useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
@@ -54,17 +87,33 @@ ENVEOF
     chgrp "$SERVICE_USER" "$CONFIG_DIR/wiiscale.env"
 fi
 
-echo "==> Installing systemd unit"
+echo "==> Installing systemd units"
 install -m 0644 "$REPO_DIR/deploy/wiiscale.service" /etc/systemd/system/wiiscale.service
+# Without this the board's power button works until the first reboot and then
+# stops, because "connectable" is runtime state that nothing restores.
+install -d /usr/local/lib/wiiscale
+install -m 0755 "$REPO_DIR/deploy/keep-connectable.sh" \
+    /usr/local/lib/wiiscale/keep-connectable.sh
+install -m 0644 "$REPO_DIR/deploy/wiiscale-connectable.service" \
+    /etc/systemd/system/wiiscale-connectable.service
 systemctl daemon-reload
 systemctl enable wiiscale.service
+if command -v btmgmt >/dev/null; then
+    systemctl enable --now wiiscale-connectable.service
+else
+    echo "    WARNING: btmgmt not found; the adapter will not be kept connectable"
+    echo "             and the board's power button will stop working on reboot."
+fi
 
 cat <<'DONE'
 
 Installed.
 
 Next:
-  1. Pair the balance board:   see docs/pairing.md
+  1. Pair the balance board:   see docs/pairing.md - on bookworm it is
+                               bluetoothctl, the SYNC button and three
+                               commands; on trixie it cannot be done at all
+                               and you use the l2cap backend instead
   2. Edit /etc/wiiscale/config.yaml (broker host, username)
   3. Put the broker password in /etc/wiiscale/wiiscale.env
   4. Check the board is readable: sudo -u wiiscale wiiscale devices

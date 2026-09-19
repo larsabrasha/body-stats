@@ -14,6 +14,11 @@ EnvironmentFile=-/etc/wiiscale/wiiscale.env
 ExecStart=/opt/wiiscale/venv/bin/wiiscale --config /etc/wiiscale/config.yaml run
 Restart=always
 RestartSec=5
+# Nothing here grows without bound - the measurement window is pruned and the
+# auto-tare buffer is capped - so this is a backstop, not a workaround. If the
+# bridge ever does leak, systemd kills it and Restart=always brings it back,
+# which beats a nightly restart that runs whether it is needed or not.
+MemoryMax=150M
 
 # The bridge reads one device node and talks to one broker; it has no business
 # writing anywhere on this machine.
@@ -23,7 +28,10 @@ ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_BLUETOOTH is for the l2cap backend, which opens the board's HID channels
+# itself. Without it that backend fails under systemd while working fine by
+# hand, which is a miserable thing to debug.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_BLUETOOTH
 RestrictNamespaces=true
 LockPersonality=true
 MemoryDenyWriteExecute=true

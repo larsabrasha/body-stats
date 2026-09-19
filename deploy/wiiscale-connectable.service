@@ -1,0 +1,26 @@
+[Unit]
+# The balance board reconnects by calling the Pi, and the Pi only hears that
+# call while its adapter is page scanning - "connectable" in btmgmt's words.
+# bluetoothd does not turn that on by itself, and it is runtime state, so it
+# is lost on every reboot. Without it the board's power button silently stops
+# working: no error, no journal entry, nothing in btmon, because the
+# controller never sees the call.
+Description=Keep the Bluetooth adapter connectable for the balance board
+Documentation=https://github.com/larsabrasha/body-stats
+After=bluetooth.service
+BindsTo=bluetooth.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Not a bare `btmgmt connectable on`: bluetooth.service counts as started
+# once bluetoothd takes its D-Bus name, and the adapter is configured after
+# that, so setting it here is overwritten. The script waits for the adapter
+# and re-asserts until the setting sticks.
+ExecStart=/usr/local/lib/wiiscale/keep-connectable.sh
+TimeoutStartSec=90
+
+[Install]
+# Not multi-user.target: this has to run again whenever bluetooth does,
+# because restarting bluetoothd clears the setting too.
+WantedBy=bluetooth.service

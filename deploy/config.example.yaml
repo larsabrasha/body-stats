@@ -26,15 +26,54 @@ mqtt:
   live_interval_seconds: 0.5
 
 board:
-  # Substring matched against evdev device names. The kernel calls the board
-  # "Nintendo Wii Remote Balance Board"; run `wiiscale devices` to see what
-  # yours is actually called.
+  # How to read the board.
+  #   evdev  read the input device hid-wiimote creates, with the board's own
+  #          calibration already applied. The default, and the only route
+  #          where the board reconnects on its own when you press its power
+  #          button. Needs a BlueZ that can pair with it, which means 5.79 or
+  #          older - Raspberry Pi OS bookworm, not trixie.
+  #   l2cap  speak the board's HID protocol over two L2CAP channels and apply
+  #          its calibration table ourselves. Needs no pairing and no kernel
+  #          driver, so it works where evdev cannot, but you press the red
+  #          SYNC button before every weighing: the board only accepts an
+  #          incoming connection while it is in pairing mode.
+  # docs/pairing.md explains which one you are stuck with and why.
+  backend: evdev
+
+  # l2cap: the board's Bluetooth address. Required - there is nothing to scan
+  # for. Find it with: bluetoothctl devices | grep RVL-WBC
+  # address: 34:AF:2C:E4:EA:C5
+
+  # l2cap: correction on the calibrated kilogram value. The board's own
+  # calibration is normally good to a few hundred grams, so leave this alone
+  # unless a known weight reads off by a fixed percentage:
+  #   new_scale = true_kg / reported_kg
+  weight_scale: 1.0
+  # l2cap: how long one connection attempt may take before the board counts
+  # as asleep.
+  connect_timeout_seconds: 5.0
+
+  # evdev: substring matched against evdev device names. The kernel calls the
+  # board "Nintendo Wii Remote Balance Board"; run `wiiscale devices` to see
+  # what yours is actually called.
   device_name: Balance Board
-  # Raw units to kilograms. hid-wiimote reports hundredths of a kilogram.
-  # If a known weight reads consistently high or low by a fixed percentage,
-  # nudge this: new_scale = 0.01 * (true_kg / reported_kg)
+  # evdev: raw units to kilograms. hid-wiimote reports hundredths of a
+  # kilogram. If a known weight reads consistently high or low by a fixed
+  # percentage, nudge this: new_scale = 0.01 * (true_kg / reported_kg)
   unit_scale: 0.01
+
+  # Both: how long to wait between attempts while no board is present.
   scan_interval_seconds: 2.0
+  # Both: drop the board once it has been empty this long, so that it powers
+  # itself down. A Wii turns its peripherals off when they go idle; nothing on
+  # Linux does, and a board left connected stays awake on four AA batteries
+  # until they run out. On evdev this needs the board's address - it is taken
+  # from sysfs if you have not set one above. 0 leaves the board connected.
+  # This is only the fallback for a board woken without anybody weighing.
+  idle_disconnect_seconds: 120.0
+  # Both: the normal way the link ends - this long after a finished weighing,
+  # once you have stepped off. Long enough for the last publish to leave.
+  release_after_weighing_seconds: 2.0
 
 measurement:
   # Total load that counts as "somebody stepped on".
@@ -47,8 +86,9 @@ measurement:
   # The window counts as stable when its max-min spread is at or below this.
   # Raise it if weighings never complete; lower it for stricter readings.
   stability_tolerance_kg: 0.3
-  # Publish anyway after this long, flagged with quality <= 50.
-  settle_timeout_seconds: 20.0
+  # Publish the steadiest window anyway after this long, flagged with
+  # quality <= 50. Short on purpose: nobody stands still for twenty seconds.
+  settle_timeout_seconds: 8.0
   min_samples: 20
   # Ignore the board this long after a weighing, so one step-on publishes once.
   cooldown_seconds: 5.0

@@ -30,6 +30,30 @@ ENV_PREFIX = "WIISCALE_"
 class BoardConfig:
     """How to find the board and how to read its numbers."""
 
+    # How to talk to the board:
+    #   "l2cap"  speak the board's HID protocol directly, applying its own
+    #            calibration table. Needs no pairing and no kernel driver, and
+    #            is the only route that works on a bluetoothd built without
+    #            BlueZ's wiimote plugin - which is what Raspberry Pi OS ships.
+    #   "evdev"  read the input device the kernel's hid-wiimote driver creates.
+    #            Nicer when it works, and the only one that supports the board
+    #            reconnecting on its own. See docs/pairing.md.
+    backend: str = "evdev"
+
+    # -- l2cap backend --------------------------------------------------
+    # The board's Bluetooth address. Required: an L2CAP connection is made to
+    # an address, there is nothing to scan for.
+    #   bluetoothctl devices | grep RVL-WBC
+    address: Optional[str] = None
+    # Correction applied to the calibrated kilogram value. The board's own
+    # calibration table is normally good to a few hundred grams, so leave this
+    # at 1.0 unless a known weight reads consistently off by a percentage.
+    weight_scale: float = 1.0
+    # How long a single connection attempt may take before it counts as
+    # "the board is asleep".
+    connect_timeout_seconds: float = 5.0
+
+    # -- evdev backend --------------------------------------------------
     # Substring matched (case-insensitively) against evdev device names. The
     # kernel's hid-wiimote driver calls the extension device
     # "Nintendo Wii Remote Balance Board".
@@ -38,8 +62,22 @@ class BoardConfig:
     # raw units are multiplied by 0.01 to get kilograms. Only touch this if you
     # are feeding the daemon from something other than hid-wiimote.
     unit_scale: float = 0.01
-    # How long to wait between scans of /dev/input while no board is present.
+
+    # -- both -----------------------------------------------------------
+    # How long to wait between attempts while no board is present.
     scan_interval_seconds: float = 2.0
+    # Drop the board once it has been empty this long, so that it powers
+    # itself down instead of holding the link open on four AA batteries. A
+    # Wii does this for its peripherals; nothing on Linux does it for you, so
+    # a board left connected simply stays awake until the batteries die.
+    # 0 disables it and keeps the board connected indefinitely.
+    idle_disconnect_seconds: float = 120.0
+    # Drop the board this long after a finished weighing, once the person has
+    # stepped off. The weighing is over, so there is nothing to stay connected
+    # for; this is the normal way the link ends, and idle_disconnect_seconds
+    # is only the fallback for a board woken without anybody standing on it.
+    # Long enough for the last publish to leave. 0 disables it.
+    release_after_weighing_seconds: float = 2.0
 
 
 @dataclass
@@ -56,9 +94,11 @@ class MeasurementConfig:
     window_seconds: float = 2.0
     # A window whose max-min spread is at or below this counts as stable.
     stability_tolerance_kg: float = 0.3
-    # Give up waiting for stability after this long and publish the best window
-    # we have, flagged with a lower quality score.
-    settle_timeout_seconds: float = 20.0
+    # Give up waiting for stability after this long and publish the steadiest
+    # window we saw, flagged with a lower quality score. Kept short on purpose:
+    # nobody stands on a bathroom scale for twenty seconds, so a long timeout
+    # is the same as never publishing for anyone who cannot hold still.
+    settle_timeout_seconds: float = 8.0
     # Refuse to publish a window built from fewer samples than this.
     min_samples: int = 20
     # After publishing, ignore the board until it has been empty this long.
@@ -111,6 +151,8 @@ _SECTIONS = {f.name: f.type for f in dataclasses.fields(Config)}
 # ``from __future__ import annotations`` makes dataclasses store field types as
 # strings, so the coercion table is keyed by name rather than by type object.
 _TRUTHY = {"1", "true", "yes", "on"}
+
+BACKENDS = ("l2cap", "evdev")
 
 
 def _type_name(target_type: Any) -> str:
@@ -199,7 +241,21 @@ def validate(config: Config) -> None:
         raise ValueError("measurement.min_samples must be at least 2")
     if m.stability_tolerance_kg <= 0:
         raise ValueError("measurement.stability_tolerance_kg must be positive")
-    if config.board.unit_scale <= 0:
+    board = config.board
+    if board.backend not in BACKENDS:
+        raise ValueError(f"board.backend must be one of {sorted(BACKENDS)}")
+    if board.backend == "l2cap" and not board.address:
+        raise ValueError(
+            "board.address is required for the l2cap backend; find it with "
+            "`bluetoothctl devices | grep RVL-WBC`"
+        )
+    if board.unit_scale <= 0:
         raise ValueError("board.unit_scale must be positive")
+    if board.weight_scale <= 0:
+        raise ValueError("board.weight_scale must be positive")
+    if board.idle_disconnect_seconds < 0:
+        raise ValueError("board.idle_disconnect_seconds cannot be negative")
+    if board.release_after_weighing_seconds < 0:
+        raise ValueError("board.release_after_weighing_seconds cannot be negative")
     if not 1 <= config.mqtt.port <= 65535:
         raise ValueError("mqtt.port must be a valid port number")

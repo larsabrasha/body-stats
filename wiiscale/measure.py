@@ -185,6 +185,12 @@ class MeasurementTracker:
         self._settle_start: Optional[float] = None
         self._empty_since: Optional[float] = None
         self._occupied = False
+        # Steadiest full window seen during this visit, and its spread. Kept so
+        # that stepping off, or the settle timeout, can publish the best moment
+        # of the weighing rather than whatever is in the window at the end -
+        # which, on a step-off, is the load falling away.
+        self._best: Optional[List[Sample]] = None
+        self._best_spread = float("inf")
 
     # -- introspection -------------------------------------------------
 
@@ -219,6 +225,7 @@ class MeasurementTracker:
                 self._settle_start = sample.timestamp
                 self._zero_samples.clear()
                 self._window.clear()
+                self._forget_best()
             return None
 
         if self.state is State.SETTLING:
@@ -251,8 +258,24 @@ class MeasurementTracker:
 
     def _feed_settling(self, sample: Sample, total: float) -> Optional[Measurement]:
         if total < self.config.step_off_threshold_kg:
-            # Stepped off before anything settled: nothing worth publishing.
-            self._enter_cooldown()
+            # Stepped off before anything settled. Nothing was published, so
+            # there is nothing to debounce: go straight back to IDLE. Cooling
+            # down here would lock the board for cooldown_seconds after every
+            # aborted attempt, and COOLDOWN only clears once the board has been
+            # *empty* that long, so stepping back on too soon left the tracker
+            # stuck with someone standing on it.
+            #
+            # Publish the steadiest window of the visit rather than discarding
+            # it: somebody who sways more than the stability tolerance would
+            # otherwise get nothing at all, having stood there and stepped off
+            # believing they had been weighed. The saved window is used instead
+            # of the live one because the live one now holds the load falling
+            # away.
+            if self._best is not None:
+                return self._finalise(sample.timestamp, stable=False, samples=self._best)
+            # Too brief to have filled a single window: there is no honest
+            # number here, so this was not a weighing.
+            self._abandon()
             return None
 
         self._window.add(sample, self.config.window_seconds)
@@ -268,6 +291,9 @@ class MeasurementTracker:
             spread = max(totals) - min(totals)
             if spread <= self.config.stability_tolerance_kg:
                 return self._finalise(sample.timestamp, stable=True)
+            if spread < self._best_spread:
+                self._best = list(self._window.samples)
+                self._best_spread = spread
 
         if elapsed >= self.config.settle_timeout_seconds:
             # Never held still. Publish whatever the window holds anyway, with
@@ -275,14 +301,18 @@ class MeasurementTracker:
             # a weak reading beats Home Assistant seeing no weighing at all.
             # A board reporting slower than min_samples/window_seconds never
             # fills the window, and used to fall through here silently.
+            if self._best is not None:
+                return self._finalise(sample.timestamp, stable=False, samples=self._best)
             if len(self._window.samples) >= MIN_PUBLISHABLE_SAMPLES:
                 return self._finalise(sample.timestamp, stable=False)
             self._enter_cooldown()
 
         return None
 
-    def _finalise(self, now: float, stable: bool) -> Measurement:
-        samples = list(self._window.samples)
+    def _finalise(
+        self, now: float, stable: bool, samples: Optional[List[Sample]] = None
+    ) -> Measurement:
+        samples = list(samples if samples is not None else self._window.samples)
         totals = [self.adjusted_total(s) for s in samples]
         spread = max(totals) - min(totals)
         weight = trimmed_mean(totals)
@@ -309,10 +339,24 @@ class MeasurementTracker:
         return measurement
 
     def _enter_cooldown(self) -> None:
+        """Hold off after a published weighing, so one step-on gives one result."""
         self.state = State.COOLDOWN
         self._window.clear()
         self._settle_start = None
         self._empty_since = None
+        self._forget_best()
+
+    def _abandon(self) -> None:
+        """Drop an unfinished attempt and be ready for the next one at once."""
+        self.state = State.IDLE
+        self._window.clear()
+        self._settle_start = None
+        self._empty_since = None
+        self._forget_best()
+
+    def _forget_best(self) -> None:
+        self._best = None
+        self._best_spread = float("inf")
 
     def _track_zero(self, sample: Sample) -> None:
         """Re-learn where zero is while the board sits empty."""
@@ -340,3 +384,4 @@ class MeasurementTracker:
         self._settle_start = None
         self._empty_since = None
         self._occupied = False
+        self._forget_best()

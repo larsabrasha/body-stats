@@ -1,19 +1,49 @@
+import textwrap
+
 import pytest
 
 from wiiscale.config import Config, load_config, validate
 
 
 def write(tmp_path, text):
+    # dedent so an indented triple-quoted block ends up at column zero.
     path = tmp_path / "config.yaml"
-    path.write_text(text)
+    path.write_text(textwrap.dedent(text))
     return path
 
 
+def valid_config() -> Config:
+    return Config()
+
+
 def test_defaults_when_no_file(tmp_path):
-    config = load_config(tmp_path / "missing.yaml", environ=False)
+    config = load_config(tmp_path / "missing.yaml")
     assert config.mqtt.port == 1883
-    assert config.board.unit_scale == 0.01
+    assert config.board.backend == "evdev"
+    assert config.board.weight_scale == 1.0
     assert config.measurement.auto_tare is True
+
+
+def test_l2cap_backend_demands_an_address():
+    config = Config()
+    config.board.backend = "l2cap"
+    assert config.board.address is None
+    with pytest.raises(ValueError, match="board.address is required"):
+        validate(config)
+
+
+def test_evdev_backend_needs_no_address():
+    config = Config()
+    assert config.board.backend == "evdev"
+    assert config.board.address is None
+    validate(config)
+
+
+def test_unknown_backend_is_rejected():
+    config = valid_config()
+    config.board.backend = "hidraw"
+    with pytest.raises(ValueError, match="board.backend"):
+        validate(config)
 
 
 def test_yaml_overrides_defaults(tmp_path):
@@ -81,11 +111,12 @@ def test_unknown_section_is_rejected(tmp_path):
         (lambda c: setattr(c.measurement, "min_samples", 1), "min_samples"),
         (lambda c: setattr(c.measurement, "stability_tolerance_kg", 0), "stability_tolerance"),
         (lambda c: setattr(c.board, "unit_scale", 0), "unit_scale"),
+        (lambda c: setattr(c.board, "weight_scale", 0), "weight_scale"),
         (lambda c: setattr(c.mqtt, "port", 0), "port"),
     ],
 )
 def test_validation_rejects_nonsense(mutate, message):
-    config = Config()
+    config = valid_config()
     mutate(config)
     with pytest.raises(ValueError, match=message):
         validate(config)

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import select
+import threading
 import time
 from typing import Iterator, List, Optional, Tuple
 
@@ -165,16 +166,23 @@ class BalanceBoard:
             pass
 
 
-def wait_for_board(config: BoardConfig, should_stop=lambda: False) -> Optional[BalanceBoard]:
+def wait_for_board(
+    config: BoardConfig, stop: Optional[threading.Event] = None
+) -> Optional[BalanceBoard]:
     """Block until a board shows up, rescanning /dev/input periodically.
 
-    The board powers itself down after a few minutes of inactivity, so its
-    input device appearing and vanishing is the normal state of affairs rather
-    than an error worth logging loudly.
+    The board powers itself down between weighings, so its input device
+    appearing and vanishing is the normal state of affairs rather than an
+    error worth logging loudly.
+
+    The wait between scans is a wait on the stop event, not a sleep loop: this
+    is where the daemon spends nearly all of its life, and waking ten times a
+    second to re-check a flag costs more than the scanning does.
     """
     _require_evdev()
+    stop = stop if stop is not None else threading.Event()
     announced = False
-    while not should_stop():
+    while not stop.is_set():
         device = find_board(config)
         if device is not None:
             log.info("Balance board connected: %s (%s)", device.name, device.path)
@@ -182,7 +190,6 @@ def wait_for_board(config: BoardConfig, should_stop=lambda: False) -> Optional[B
         if not announced:
             log.info("Waiting for the balance board to connect...")
             announced = True
-        deadline = time.monotonic() + config.scan_interval_seconds
-        while time.monotonic() < deadline and not should_stop():
-            time.sleep(0.1)
+        if stop.wait(config.scan_interval_seconds):
+            break
     return None

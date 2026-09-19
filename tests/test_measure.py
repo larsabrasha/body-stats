@@ -251,3 +251,93 @@ def test_window_does_not_grow_past_its_length():
     assert len(results) == 1
     # One second at 50 Hz, plus the single sample kept from before the cutoff.
     assert results[0].sample_count <= int(SAMPLE_RATE) + 2
+
+
+def test_an_aborted_attempt_does_not_lock_out_the_next_one():
+    # Regression, found on hardware: stepping off mid-settle used to enter
+    # COOLDOWN, which only clears once the board has been EMPTY for
+    # cooldown_seconds. Step back on sooner than that and the tracker sat in
+    # COOLDOWN with someone standing on it, publishing nothing however long
+    # they stood still.
+    tracker = MeasurementTracker(config())
+
+    _, end = feed_for(tracker, 80.0, seconds=0.4)          # step on
+    _, end = feed_for(tracker, 0.0, seconds=0.2, start=end)  # step off again
+    assert tracker.state is State.IDLE
+
+    # Straight back on, well inside cooldown_seconds, and stand still.
+    results, _ = feed_for(tracker, 80.0, seconds=2.0, start=end)
+    assert len(results) == 1, "a real weighing was swallowed by the cooldown"
+    assert results[0].weight_kg == pytest.approx(80.0, abs=0.01)
+
+
+def test_cooldown_still_debounces_a_published_weighing():
+    # The other half: once something HAS been published, stepping off and
+    # straight back on must not produce a second reading for the same visit.
+    tracker = MeasurementTracker(config())
+
+    results, end = feed_for(tracker, 80.0, seconds=2.0)
+    assert len(results) == 1
+    assert tracker.state is State.COOLDOWN
+
+    results, end = feed_for(tracker, 0.0, seconds=0.3, start=end)
+    assert results == []
+    results, _ = feed_for(tracker, 80.0, seconds=2.0, start=end)
+    assert results == [], "cooldown let the same visit publish twice"
+
+
+def test_stepping_off_publishes_the_steadiest_window():
+    # Somebody who sways more than stability_tolerance_kg used to get nothing
+    # at all: they stood there, stepped off believing they had been weighed,
+    # and no measurement was ever published.
+    tracker = MeasurementTracker(config())
+
+    results, end = feed_for(tracker, 80.0, seconds=3.0, jitter=0.4)
+    assert results == [], "0.8 kg of sway should not count as settled"
+
+    results, _ = feed_for(tracker, 0.0, seconds=0.5, start=end)
+    assert len(results) == 1, "stepping off threw the weighing away"
+    measurement = results[0]
+    assert measurement.stable is False
+    assert measurement.quality <= 50, "an unsettled reading must be filterable"
+    assert measurement.weight_kg == pytest.approx(80.0, abs=0.5)
+
+
+def test_the_unloading_ramp_does_not_drag_the_step_off_reading_down():
+    # The live window at step-off holds the load falling away, so publishing it
+    # would report far too little. The saved window must be used instead.
+    tracker = MeasurementTracker(config())
+    _, end = feed_for(tracker, 80.0, seconds=3.0, jitter=0.4)
+
+    results = []
+    timestamp = end
+    steps = int(0.5 * SAMPLE_RATE)
+    for i in range(steps):
+        per_cell = 80.0 * (1 - i / steps) / 4.0
+        result = tracker.feed(
+            Sample(timestamp=timestamp, sensors=(per_cell,) * 4)
+        )
+        if result is not None:
+            results.append(result)
+        timestamp += 1.0 / SAMPLE_RATE
+
+    # The ramp above only reaches 3.2 kg, which is still above
+    # step_off_threshold_kg, so the step off is not detected until here.
+    tail, _ = feed_for(tracker, 0.0, seconds=0.3, start=timestamp)
+    results.extend(tail)
+
+    assert len(results) == 1
+    assert results[0].weight_kg == pytest.approx(80.0, abs=0.5)
+
+
+def test_a_step_on_too_brief_to_fill_a_window_publishes_nothing():
+    # The other side of the trade: half a second on the board is not a
+    # weighing, and inventing a number from the step-on ramp would be worse
+    # than publishing nothing.
+    tracker = MeasurementTracker(config())
+
+    results, end = feed_for(tracker, 80.0, seconds=0.5, jitter=0.4)
+    more, _ = feed_for(tracker, 0.0, seconds=0.5, start=end)
+
+    assert results == [] and more == []
+    assert tracker.state is State.IDLE
