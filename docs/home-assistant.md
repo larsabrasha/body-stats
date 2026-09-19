@@ -109,3 +109,65 @@ bothers you.
 `state_class: measurement` means Home Assistant keeps long-term statistics for
 the weight sensor automatically — a statistics graph card on
 `sensor.wii_balance_board_weight` gives you a trend line with no extra setup.
+
+## Telling people apart
+
+One board, one weight sensor, and several people in the house. If everybody's
+weight sits in a clearly separate band — say a child at 25 kg, one adult at
+59 and another at 106 — a weight range is enough to say who just stood on it.
+
+It has to be a *trigger*-based template sensor. A plain template sensor, the
+kind the Helpers UI creates, would follow the shared weight continuously and
+show whoever weighed themselves last; these latch, keeping each person's own
+last reading until they weigh themselves again.
+
+```yaml
+template:
+  - trigger:
+      - platform: state
+        entity_id: sensor.wii_balance_board_last_measurement
+    condition:
+      - condition: numeric_state
+        entity_id: sensor.wii_balance_board_weight
+        above: 85
+        below: 140
+    sensor:
+      - name: Weight adult one
+        unique_id: wiiscale_weight_adult_one
+        unit_of_measurement: kg
+        device_class: weight
+        state_class: measurement
+        state: "{{ states('sensor.wii_balance_board_weight') | float }}"
+        attributes:
+          quality: "{{ state_attr('sensor.wii_balance_board_weight', 'quality') }}"
+```
+
+Repeat the block per person with that person's range. Two details are
+deliberate.
+
+The trigger is `last_measurement`, not the weight. The timestamp changes on
+every weighing, while the weight can come out identical twice in a row — and
+then nothing would fire.
+
+The ranges have gaps between them. A weighing at 42 kg, between the child's
+band and the adult's, belongs to nobody and is dropped. That is better than
+assigning it to whichever band is nearest and quietly corrupting someone's
+trend.
+
+To ignore the readings that never settled, add one more condition:
+
+```yaml
+      - condition: template
+        value_template: >
+          {{ state_attr('sensor.wii_balance_board_weight', 'quality') | int(0) >= 30 }}
+```
+
+Each of these sensors carries `state_class: measurement`, so Home Assistant
+keeps long-term statistics per person and a statistics graph card each gives
+you three trend lines.
+
+Two limits worth knowing before you rely on it. A guest lands in whichever
+band they happen to fit and is recorded as that person: weight alone cannot
+identify anybody. And a growing child walks up through the bands, so the
+boundaries need moving apart every so often — check them whenever a trend
+line does something surprising.
