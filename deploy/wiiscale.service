@@ -1,0 +1,32 @@
+[Unit]
+Description=Wii Balance Board to Home Assistant bridge
+Documentation=https://github.com/larsabrasha/body-stats
+After=network-online.target bluetooth.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wiiscale
+Group=wiiscale
+# Reading /dev/input/event* needs the input group; nothing else here does.
+SupplementaryGroups=input
+EnvironmentFile=-/etc/wiiscale/wiiscale.env
+ExecStart=/opt/wiiscale/venv/bin/wiiscale --config /etc/wiiscale/config.yaml run
+Restart=always
+RestartSec=5
+
+# The bridge reads one device node and talks to one broker; it has no business
+# writing anywhere on this machine.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

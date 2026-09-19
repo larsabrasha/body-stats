@@ -1,0 +1,260 @@
+"""Turning a stream of load-cell samples into a single trustworthy weight.
+
+The board reports roughly 100 samples a second and every one of them wobbles:
+you sway, the platform flexes, the sensors are cheap. So rather than grabbing
+one reading, the tracker waits for a window of samples that agree with each
+other, then reduces that window to one number and scores how much it agreed.
+"""
+
+from __future__ import annotations
+
+import statistics
+from collections import deque
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Deque, List, Optional, Sequence, Tuple
+
+from .config import MeasurementConfig
+
+
+@dataclass(frozen=True)
+class Sample:
+    """One synchronised reading of the four load cells, in kilograms."""
+
+    timestamp: float
+    sensors: Tuple[float, float, float, float]
+
+    @property
+    def total(self) -> float:
+        return sum(self.sensors)
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """A finished weighing."""
+
+    timestamp: float
+    weight_kg: float
+    quality: int
+    spread_kg: float
+    std_dev_kg: float
+    sample_count: int
+    duration_s: float
+    settle_s: float
+    sensors_kg: Tuple[float, float, float, float]
+    tare_kg: float
+    stable: bool
+
+
+class State(Enum):
+    IDLE = "idle"
+    SETTLING = "settling"
+    COOLDOWN = "cooldown"
+
+
+def trimmed_mean(values: Sequence[float], proportion: float = 0.2) -> float:
+    """Mean of the values left after dropping the extremes from both ends.
+
+    Cheap insurance against the odd spike from a foot shifting: a plain mean
+    would carry it, a median would throw away most of the window.
+    """
+    ordered = sorted(values)
+    cut = int(len(ordered) * proportion)
+    core = ordered[cut : len(ordered) - cut] or ordered
+    return statistics.fmean(core)
+
+
+def quality_score(spread: float, tolerance: float, stable: bool) -> int:
+    """Score a window's agreement from 0 (useless) to 100 (rock steady).
+
+    Anchored so that a window exactly at the stability tolerance — the loosest
+    reading we are willing to accept as stable — scores 80, and the score
+    reaches 0 at five times the tolerance. A window published only because the
+    settle timeout expired is capped at 50, whatever its spread, because we
+    never saw it hold still.
+    """
+    if tolerance <= 0:
+        return 0
+    if spread <= tolerance:
+        score = 100.0 - 20.0 * (spread / tolerance)
+    else:
+        score = 80.0 - 80.0 * ((spread - tolerance) / (4.0 * tolerance))
+    score = max(0.0, min(100.0, score))
+    if not stable:
+        score = min(score, 50.0)
+    return int(round(score))
+
+
+@dataclass
+class _Window:
+    """Samples inside the sliding measurement window."""
+
+    samples: Deque[Sample] = field(default_factory=deque)
+
+    def add(self, sample: Sample, window_seconds: float) -> None:
+        self.samples.append(sample)
+        cutoff = sample.timestamp - window_seconds
+        # Keep one sample from before the cutoff. Dropping it would cap the
+        # window's span at just under window_seconds, and the "is the window
+        # full yet" check would then hinge on two floats landing exactly equal.
+        while len(self.samples) > 2 and self.samples[1].timestamp <= cutoff:
+            self.samples.popleft()
+
+    def clear(self) -> None:
+        self.samples.clear()
+
+    @property
+    def duration(self) -> float:
+        if len(self.samples) < 2:
+            return 0.0
+        return self.samples[-1].timestamp - self.samples[0].timestamp
+
+
+class MeasurementTracker:
+    """Feed it samples, it hands back a Measurement once one is complete.
+
+    The lifecycle is IDLE -> SETTLING -> COOLDOWN -> IDLE. Tare is only ever
+    updated in IDLE, when the board is reading close to empty.
+    """
+
+    def __init__(self, config: MeasurementConfig) -> None:
+        self.config = config
+        self.state = State.IDLE
+        self._window = _Window()
+        self._tare = 0.0
+        self._zero_samples: Deque[float] = deque()
+        self._settle_start: Optional[float] = None
+        self._empty_since: Optional[float] = None
+
+    # -- introspection -------------------------------------------------
+
+    @property
+    def tare_kg(self) -> float:
+        return self._tare
+
+    @property
+    def occupied(self) -> bool:
+        return self.state is State.SETTLING
+
+    def adjusted_total(self, sample: Sample) -> float:
+        return sample.total - self._tare
+
+    # -- main entry point ----------------------------------------------
+
+    def feed(self, sample: Sample) -> Optional[Measurement]:
+        """Consume one sample; return a Measurement when one just completed."""
+        total = self.adjusted_total(sample)
+
+        if self.state is State.IDLE:
+            self._track_zero(sample)
+            if total >= self.config.step_on_threshold_kg:
+                self.state = State.SETTLING
+                self._settle_start = sample.timestamp
+                self._zero_samples.clear()
+                self._window.clear()
+            return None
+
+        if self.state is State.SETTLING:
+            return self._feed_settling(sample, total)
+
+        # COOLDOWN: hold off until the board has been empty long enough that a
+        # single weighing cannot be published twice.
+        if total < self.config.step_off_threshold_kg:
+            if self._empty_since is None:
+                self._empty_since = sample.timestamp
+            elif sample.timestamp - self._empty_since >= self.config.cooldown_seconds:
+                self.state = State.IDLE
+                self._empty_since = None
+        else:
+            self._empty_since = None
+        return None
+
+    # -- internals -----------------------------------------------------
+
+    def _feed_settling(self, sample: Sample, total: float) -> Optional[Measurement]:
+        if total < self.config.step_off_threshold_kg:
+            # Stepped off before anything settled: nothing worth publishing.
+            self._enter_cooldown()
+            return None
+
+        self._window.add(sample, self.config.window_seconds)
+        assert self._settle_start is not None
+        elapsed = sample.timestamp - self._settle_start
+        full = (
+            self._window.duration >= self.config.window_seconds
+            and len(self._window.samples) >= self.config.min_samples
+        )
+
+        if full:
+            totals = [self.adjusted_total(s) for s in self._window.samples]
+            spread = max(totals) - min(totals)
+            if spread <= self.config.stability_tolerance_kg:
+                return self._finalise(sample.timestamp, stable=True)
+
+        if elapsed >= self.config.settle_timeout_seconds:
+            if full:
+                # Never held still, but we have a full window — publish it with
+                # a capped quality score so automations can filter it out.
+                return self._finalise(sample.timestamp, stable=False)
+            self._enter_cooldown()
+
+        return None
+
+    def _finalise(self, now: float, stable: bool) -> Measurement:
+        samples = list(self._window.samples)
+        totals = [self.adjusted_total(s) for s in samples]
+        spread = max(totals) - min(totals)
+        weight = trimmed_mean(totals)
+        std_dev = statistics.pstdev(totals) if len(totals) > 1 else 0.0
+        sensors = tuple(
+            statistics.fmean([s.sensors[i] for s in samples]) for i in range(4)
+        )
+        settle_s = now - self._settle_start if self._settle_start is not None else 0.0
+
+        measurement = Measurement(
+            timestamp=now,
+            weight_kg=round(weight, 2),
+            quality=quality_score(spread, self.config.stability_tolerance_kg, stable),
+            spread_kg=round(spread, 3),
+            std_dev_kg=round(std_dev, 3),
+            sample_count=len(samples),
+            duration_s=round(self._window.duration, 2),
+            settle_s=round(settle_s, 2),
+            sensors_kg=tuple(round(v, 2) for v in sensors),  # type: ignore[arg-type]
+            tare_kg=round(self._tare, 3),
+            stable=stable,
+        )
+        self._enter_cooldown()
+        return measurement
+
+    def _enter_cooldown(self) -> None:
+        self.state = State.COOLDOWN
+        self._window.clear()
+        self._settle_start = None
+        self._empty_since = None
+
+    def _track_zero(self, sample: Sample) -> None:
+        """Re-learn where zero is while the board sits empty."""
+        if not self.config.auto_tare:
+            return
+        raw = sample.total
+        if abs(raw - self._tare) > self.config.max_tare_kg:
+            # Something is on the board, or the board is wildly off. Either way
+            # this is not a reading of "empty".
+            self._zero_samples.clear()
+            return
+        self._zero_samples.append(raw)
+        if len(self._zero_samples) > 200:
+            self._zero_samples.popleft()
+        if len(self._zero_samples) >= 50:
+            candidate = statistics.median(self._zero_samples)
+            if abs(candidate) <= self.config.max_tare_kg:
+                self._tare = candidate
+
+    def reset(self) -> None:
+        """Forget all state; used when the board disconnects and comes back."""
+        self.state = State.IDLE
+        self._window.clear()
+        self._zero_samples.clear()
+        self._settle_start = None
+        self._empty_since = None

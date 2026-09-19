@@ -1,0 +1,54 @@
+# wiiscale configuration. Install to /etc/wiiscale/config.yaml.
+# Every value here is optional; anything left out uses the built-in default,
+# and any value can be overridden with an environment variable named
+# WIISCALE_<SECTION>_<KEY>, e.g. WIISCALE_MQTT_PASSWORD.
+
+mqtt:
+  host: homeassistant.local
+  port: 1883
+  username: wiiscale
+  # Prefer keeping the password out of this file: put it in
+  # /etc/wiiscale/wiiscale.env as WIISCALE_MQTT_PASSWORD=...
+  # password: changeme
+
+  # Topics are built as <base_topic>/<node_id>/...; node_id also namespaces
+  # the Home Assistant entity ids, so change it if you ever run two boards.
+  base_topic: wiiscale
+  node_id: wii_balance_board
+  discovery_prefix: homeassistant
+  device_name: Wii Balance Board
+  tls: false
+
+board:
+  # Substring matched against evdev device names. The kernel calls the board
+  # "Nintendo Wii Remote Balance Board"; run `wiiscale devices` to see what
+  # yours is actually called.
+  device_name: Balance Board
+  # Raw units to kilograms. hid-wiimote reports hundredths of a kilogram.
+  # If a known weight reads consistently high or low by a fixed percentage,
+  # nudge this: new_scale = 0.01 * (true_kg / reported_kg)
+  unit_scale: 0.01
+  scan_interval_seconds: 2.0
+
+measurement:
+  # Total load that counts as "somebody stepped on".
+  step_on_threshold_kg: 5.0
+  # Total load that counts as "the board is empty again". Must be lower than
+  # step_on_threshold_kg.
+  step_off_threshold_kg: 3.0
+  # Length of the window the published weight is averaged over.
+  window_seconds: 2.0
+  # The window counts as stable when its max-min spread is at or below this.
+  # Raise it if weighings never complete; lower it for stricter readings.
+  stability_tolerance_kg: 0.3
+  # Publish anyway after this long, flagged with quality <= 50.
+  settle_timeout_seconds: 20.0
+  min_samples: 20
+  # Ignore the board this long after a weighing, so one step-on publishes once.
+  cooldown_seconds: 5.0
+  # Learn where zero is while the board sits empty and subtract it.
+  auto_tare: true
+  max_tare_kg: 2.0
+
+logging:
+  level: INFO
