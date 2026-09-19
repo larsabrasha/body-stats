@@ -1,59 +1,61 @@
 # body-stats
 
-Väg dig på en Wii Balance Board och få vikten i Home Assistant.
+Weigh yourself on a Wii Balance Board and get the number into Home Assistant.
 
-En liten Python-tjänst som körs på en Raspberry Pi: den läser de fyra
-lastcellerna i brädan, väntar tills du står stilla, och publicerar vikten till
-Home Assistant via MQTT med auto-discovery. Inget att lägga till i
-`configuration.yaml` — entiteterna dyker upp av sig själva.
+A small Python service that runs on a Raspberry Pi: it reads the four load
+cells in the board, waits until you stop moving, and publishes the weight to
+Home Assistant over MQTT with auto-discovery. Nothing to add to
+`configuration.yaml` — the entities show up on their own.
 
-Du kliver upp på brädan, står still ett par sekunder, kliver av. Klart.
+You step on the board, stand still for a couple of seconds, step off. Done.
 
-## Hårdvara
+## Hardware
 
-Kör på en **Raspberry Pi Zero WH** — billigast, minst, och koden i det här
-repot funkar oförändrad. En 3B+ går förstås också bra men är overkill.
-[docs/hardware.md](docs/hardware.md) går igenom valet, inklusive varför en
-ESP32 (M5Stack Atom Lite, M5StickC Plus) är möjlig men betyder att du får
-skriva firmware själv — och vilka ESP32-varianter som inte kan prata med
-brädan alls.
+Runs on a **Raspberry Pi Zero WH** — cheapest, smallest, and the code in this
+repository works on it unchanged. A 3B+ is fine too, but it is overkill.
+[docs/hardware.md](docs/hardware.md) goes through the choice, including why an
+ESP32 (M5Stack Atom Lite, M5StickC Plus) is possible but means writing the
+firmware yourself — and which ESP32 variants cannot talk to the board at all.
 
-## Varför Raspberry Pi och inte en Mac-app
+## Why a Raspberry Pi and not a Mac app
 
-Linux har redan en drivrutin för hårdvaran, `hid-wiimote`. När brädan är parad
-syns den som ett helt vanligt input-device där de fyra lastcellerna ligger som
-absoluta axlar, redan körda genom brädans egen kalibreringstabell. BlueZ har
-dessutom en Wii-specifik plugin som kan den udda PIN-koden Wii-enheter
-använder, så `bluetoothctl pair` bara funkar.
+Linux already has a driver for the hardware, `hid-wiimote`. Once the board is
+paired it appears as an ordinary input device whose four absolute axes carry
+the load cells, already run through the board's own calibration table. BlueZ
+also ships a Wii-specific plugin that knows the odd PIN these devices use, so
+`bluetoothctl pair` just works.
 
-macOS har varken det ena eller det andra. En Mac-app hade betytt att
-implementera HID-protokollet och kalibreringsmatten för hand, mot en
-Bluetooth-stack som är ökänd för att bråka med Wii-tillbehör — och Mac:en hade
-behövt vara vaken och i närheten varje gång du väger dig. En Pi som står
-bredvid vågen och alltid är på är helt enkelt rätt verktyg.
+macOS has neither. A Mac app would have meant implementing the HID protocol
+and the calibration maths by hand, against a Bluetooth stack that is famously
+unhappy with Wii peripherals — and the Mac would have to be awake and nearby
+every time you weigh yourself. A Pi that sits next to the scale and is always
+on is simply the right tool.
 
-## Så här mäter den
+## How it measures
 
-Rådatat från brädan skakar hela tiden — du svajar, plattan fjädrar, sensorerna
-är billiga. Därför plockar tjänsten inte ett värde utan väntar in ett *fönster*
-av mätvärden som är överens med varandra:
+The raw data from the board shakes constantly — you sway, the platform flexes,
+the sensors are cheap. So the service does not grab one value; it waits for a
+*window* of samples that agree with each other:
 
-1. **Tomgång.** Brädan är tom. Nollpunkten lärs in löpande (`auto_tare`), så en
-   bräda som driver några hundra gram fel inte förskjuter varje mätning.
-2. **Insvängning.** Någon står på brädan. Ett glidande fönster på 2 sekunder
-   fylls på. När spannet (max − min) i fönstret är nere under 0,3 kg räknas det
-   som stabilt.
-3. **Publicering.** Vikten blir ett trimmat medelvärde av fönstret — de
-   extrema värdena kastas, så en fot som flyttar sig inte drar med sig
-   resultatet. Med på köpet följer ett kvalitetsvärde 0–100 som säger hur väl
-   mätvärdena var överens.
-4. **Karens.** Brädan ignoreras tills den varit tom en stund, så ett
-   uppkliv ger exakt en mätning.
+1. **Idle.** The board is empty. The zero point is learned continuously
+   (`auto_tare`), so a board that drifts a few hundred grams does not skew
+   every measurement.
+2. **Settling.** Somebody is on the board. A 2-second sliding window fills up.
+   When the spread (max − min) in the window is below 0.3 kg, it counts as
+   stable.
+3. **Publishing.** The weight is a trimmed mean of the window — the extremes
+   are thrown away, so a foot shifting does not drag the result with it. A
+   quality score of 0–100 comes along, saying how well the samples agreed.
+4. **Lockout.** The board is ignored until it has been empty for a while, so
+   one step-on gives exactly one measurement.
 
-Svänger det aldrig in ger den upp efter 20 sekunder och publicerar ändå, men
-med kvalitet högst 50 så att du kan filtrera bort den i Home Assistant.
+If it never settles, the service gives up after 20 seconds and publishes
+anyway, but with a quality score of at most 50 so you can filter it out in
+Home Assistant. The one case it publishes nothing is a board reporting so
+slowly that fewer than two samples landed in the window — there is nothing to
+average.
 
-## Kom igång
+## Getting started
 
 ```bash
 git clone https://github.com/larsabrasha/body-stats.git
@@ -61,71 +63,72 @@ cd body-stats
 sudo ./deploy/install.sh
 ```
 
-Sedan:
+Then:
 
-1. **Para brädan** — se [docs/pairing.md](docs/pairing.md). Engångsjobb; därefter
-   kopplar brädan upp sig själv när du trycker på power-knappen.
-2. **Konfigurera** `/etc/wiiscale/config.yaml` (broker-adress och användarnamn),
-   och lägg lösenordet i `/etc/wiiscale/wiiscale.env` som
+1. **Pair the board** — see [docs/pairing.md](docs/pairing.md). A one-time job;
+   after that the board connects by itself when you press its power button.
+2. **Configure** `/etc/wiiscale/config.yaml` (broker address and username), and
+   put the password in `/etc/wiiscale/wiiscale.env` as
    `WIISCALE_MQTT_PASSWORD=...`.
-3. **Testa avläsningen** innan du kopplar på MQTT:
+3. **Test the readings** before you wire up MQTT:
 
    ```bash
    sudo wiiscale monitor
    ```
 
-   Tom bräda ska visa runt 0,00 kg. Kliv upp — totalen ska stämma med din
-   vanliga våg på något hundratal gram när.
-4. **Starta tjänsten:**
+   An empty board should show around 0.00 kg. Step on — the total should match
+   your usual bathroom scale within a few hundred grams.
+4. **Start the service:**
 
    ```bash
    sudo systemctl start wiiscale
    journalctl -u wiiscale -f
    ```
 
-## Entiteter i Home Assistant
+## Entities in Home Assistant
 
-| Entitet | Beskrivning |
+| Entity | Description |
 | --- | --- |
-| `sensor.wii_balance_board_weight` | Vikten i kg. Hela mätningen följer med som attribut. |
-| `sensor.wii_balance_board_quality` | 0–100, hur stabil mätningen var. |
-| `sensor.wii_balance_board_last_measurement` | Tidpunkt för senaste vägningen. |
-| `binary_sensor.wii_balance_board_occupied` | Om någon står på brädan just nu. |
+| `sensor.wii_balance_board_weight` | The weight in kg. The whole measurement comes along as attributes. |
+| `sensor.wii_balance_board_quality` | 0–100, how stable the measurement was. |
+| `sensor.wii_balance_board_last_measurement` | When the last weighing happened. |
+| `binary_sensor.wii_balance_board_occupied` | Whether somebody is on the board right now. |
 
-Eftersom viktsensorn har `state_class: measurement` sparar Home Assistant
-långtidsstatistik automatiskt — ett statistikkort ger dig trendkurvan utan mer
-handpåläggning. Exempel på automationer och hur du filtrerar bort dåliga
-mätningar finns i [docs/home-assistant.md](docs/home-assistant.md).
+Because the weight sensor has `state_class: measurement`, Home Assistant keeps
+long-term statistics automatically — a statistics card gives you the trend line
+with no further work. Example automations, and how to filter out bad
+measurements, are in [docs/home-assistant.md](docs/home-assistant.md).
 
-## Kommandon
+## Commands
 
 ```bash
-wiiscale run        # tjänsten (det systemd startar)
-wiiscale monitor    # liveavläsning i terminalen, rör inte MQTT
-wiiscale devices    # listar input-devices som ser ut som en balansbräda
-wiiscale config     # visar konfigurationen som den faktiskt tolkats
+wiiscale run        # the service (what systemd starts)
+wiiscale monitor    # live readings in the terminal, does not touch MQTT
+wiiscale devices    # lists input devices that look like a balance board
+wiiscale config     # prints the configuration as it was actually parsed
 ```
 
-Alla tar `--config <fil>` och `--log-level DEBUG`.
+All of them take `--config <file>` and `--log-level DEBUG`, on either side of
+the subcommand.
 
-## Konfiguration
+## Configuration
 
-Alla värden finns dokumenterade i
-[deploy/config.example.yaml](deploy/config.example.yaml). Varje inställning kan
-också sättas med en miljövariabel som heter `WIISCALE_<SEKTION>_<NYCKEL>`, till
-exempel `WIISCALE_MQTT_PASSWORD` eller `WIISCALE_MEASUREMENT_WINDOW_SECONDS` —
-praktiskt för hemligheter som inte ska ligga i YAML-filen.
+Every value is documented in
+[deploy/config.example.yaml](deploy/config.example.yaml). Each setting can also
+be set with an environment variable named `WIISCALE_<SECTION>_<KEY>`, for
+example `WIISCALE_MQTT_PASSWORD` or `WIISCALE_MEASUREMENT_WINDOW_SECONDS` —
+handy for secrets that should not sit in the YAML file.
 
-Det du troligast vill röra:
+What you are most likely to touch:
 
-- `measurement.stability_tolerance_kg` — höj om mätningar aldrig blir klara,
-  sänk om du vill ha strängare avläsningar.
-- `measurement.window_seconds` — längre fönster ger stabilare värde men kräver
-  att du står still längre.
-- `board.unit_scale` — bara om brädan läser konsekvent fel med en fast
-  *procent*. Ett fast antal gram fel sköter `auto_tare` redan.
+- `measurement.stability_tolerance_kg` — raise it if measurements never
+  complete, lower it for stricter readings.
+- `measurement.window_seconds` — a longer window gives a steadier value but
+  means standing still for longer.
+- `board.unit_scale` — only if the board reads consistently wrong by a fixed
+  *percentage*. A fixed number of grams is already handled by `auto_tare`.
 
-## Utveckling
+## Development
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
@@ -133,9 +136,9 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Testerna kör var som helst — mät- och MQTT-logiken är fri från evdev, och
-brädan matas in som syntetiska mätvärden.
+The tests run anywhere — the measurement and MQTT logic is free of evdev, and
+the board is fed in as synthetic samples.
 
-## Licens
+## License
 
 MIT.
