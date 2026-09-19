@@ -104,8 +104,8 @@ def test_discovery_is_published_retained(publisher):
     assert all(retain for _, _, retain in publisher._client.published)
 
 
-def test_measurement_payload_is_json_serialisable_and_complete(publisher):
-    payload = publisher.measurement_payload(measurement())
+def test_measurement_payload_is_json_serialisable_and_complete():
+    payload = measurement().as_payload()
     json.dumps(payload)  # must not raise
     assert payload["weight"] == 82.35
     assert payload["quality"] == 94
@@ -140,6 +140,23 @@ def test_live_publishing_is_throttled_but_not_across_state_changes(publisher):
     publisher.publish_live(True, 80.0)  # occupancy changed, must go out
     assert len(publisher._client.published) == 2
     assert publisher._client.payload_for(publisher.live_topic)["occupied"] is True
+
+
+def test_discovery_templates_read_keys_the_payload_actually_has(publisher):
+    """The value templates are derived from Measurement.PAYLOAD_FIELDS; this
+    pins that they still resolve against a real published payload."""
+    payload = measurement().as_payload()
+    templates = {
+        "weight": "value_json.weight",
+        "quality": "value_json.quality",
+        "last_measurement": "value_json.timestamp",
+    }
+    for entity, expected in templates.items():
+        config = publisher.discovery_payloads()[
+            f"homeassistant/sensor/wii_balance_board/{entity}/config"
+        ]
+        assert config["value_template"] == "{{ " + expected + " }}"
+        assert expected.split(".", 1)[1] in payload
 
 
 def test_occupancy_template_renders_on_off(publisher):

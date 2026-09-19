@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import paho.mqtt.client as mqtt
@@ -30,16 +29,14 @@ log = logging.getLogger(__name__)
 PAYLOAD_ONLINE = "online"
 PAYLOAD_OFFLINE = "offline"
 
+# Keys in the live payload. The state payload's keys belong to Measurement.
+KEY_OCCUPIED = "occupied"
+KEY_TOTAL = "total"
 
-def monotonic_to_iso(monotonic_timestamp: float) -> str:
-    """Convert a time.monotonic() stamp to a wall-clock ISO 8601 string.
 
-    Samples are stamped with the monotonic clock so that durations stay correct
-    across NTP steps; Home Assistant wants a real date, so the offset between
-    the two clocks is applied at publish time.
-    """
-    wall = time.time() - (time.monotonic() - monotonic_timestamp)
-    return datetime.fromtimestamp(wall, tz=timezone.utc).isoformat(timespec="seconds")
+def _template(key: str) -> str:
+    """A Home Assistant value template reading one key out of the payload."""
+    return f"{{{{ value_json.{key} }}}}"
 
 
 class HomeAssistantPublisher:
@@ -101,7 +98,7 @@ class HomeAssistantPublisher:
             "unique_id": f"{node}_weight",
             "object_id": f"{node}_weight",
             "state_topic": self.state_topic,
-            "value_template": "{{ value_json.weight }}",
+            "value_template": _template(Measurement.payload_key("weight_kg")),
             # Everything in the state payload also lands as attributes, so the
             # sensor's more-info dialog shows how the number was arrived at.
             "json_attributes_topic": self.state_topic,
@@ -117,7 +114,7 @@ class HomeAssistantPublisher:
             "unique_id": f"{node}_quality",
             "object_id": f"{node}_quality",
             "state_topic": self.state_topic,
-            "value_template": "{{ value_json.quality }}",
+            "value_template": _template(Measurement.payload_key("quality")),
             "state_class": "measurement",
             "unit_of_measurement": "%",
             "entity_category": "diagnostic",
@@ -129,7 +126,7 @@ class HomeAssistantPublisher:
             "unique_id": f"{node}_last_measurement",
             "object_id": f"{node}_last_measurement",
             "state_topic": self.state_topic,
-            "value_template": "{{ value_json.timestamp }}",
+            "value_template": _template(Measurement.payload_key("timestamp")),
             "device_class": "timestamp",
             "entity_category": "diagnostic",
         }
@@ -141,7 +138,7 @@ class HomeAssistantPublisher:
             "state_topic": self.live_topic,
             # Rendered to ON/OFF explicitly rather than relying on how Home
             # Assistant stringifies a JSON boolean.
-            "value_template": "{{ 'ON' if value_json.occupied else 'OFF' }}",
+            "value_template": f"{{{{ 'ON' if value_json.{KEY_OCCUPIED} else 'OFF' }}}}",
             "payload_on": "ON",
             "payload_off": "OFF",
             "device_class": "occupancy",
@@ -202,24 +199,8 @@ class HomeAssistantPublisher:
         for topic, payload in self.discovery_payloads().items():
             self._client.publish(topic, json.dumps(payload), qos=1, retain=True)
 
-    @staticmethod
-    def measurement_payload(measurement: Measurement) -> Dict[str, Any]:
-        return {
-            "weight": measurement.weight_kg,
-            "quality": measurement.quality,
-            "stable": measurement.stable,
-            "spread": measurement.spread_kg,
-            "std_dev": measurement.std_dev_kg,
-            "samples": measurement.sample_count,
-            "duration": measurement.duration_s,
-            "settle_time": measurement.settle_s,
-            "sensors": list(measurement.sensors_kg),
-            "tare": measurement.tare_kg,
-            "timestamp": monotonic_to_iso(measurement.timestamp),
-        }
-
     def publish_measurement(self, measurement: Measurement) -> None:
-        payload = self.measurement_payload(measurement)
+        payload = measurement.as_payload()
         log.info(
             "Weight %.2f kg (quality %d%%, spread %.3f kg, %d samples)",
             measurement.weight_kg,
@@ -241,5 +222,5 @@ class HomeAssistantPublisher:
             return
         self._last_live = now
         self._last_occupied = occupied
-        payload = {"occupied": occupied, "total": round(total_kg, 2)}
+        payload = {KEY_OCCUPIED: occupied, KEY_TOTAL: round(total_kg, 2)}
         self._client.publish(self.live_topic, json.dumps(payload), qos=0, retain=True)
