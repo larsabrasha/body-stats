@@ -1,0 +1,104 @@
+blueprint:
+  name: Balance board weighing in a weight range
+  description: >-
+    Run something when a finished weighing falls inside one person's weight
+    range. Create one automation from this per person.
+
+    It triggers on the MQTT message rather than on the weight sensor, and
+    that is not incidental. The weight and the timestamp are two entities
+    reading the same message, Home Assistant updates them in no guaranteed
+    order, and an automation triggered on one of them can read the other
+    before it has caught up - which reports the previous weighing. Reading
+    the payload directly cannot race with itself.
+  domain: automation
+  author: wiiscale
+  source_url: https://github.com/larsabrasha/body-stats/blob/main/deploy/home-assistant/weighing-in-range.yaml
+  input:
+    topic:
+      name: State topic
+      description: >-
+        mqtt.base_topic and mqtt.node_id from the wiiscale configuration,
+        joined with /state.
+      default: wiiscale/wii_balance_board/state
+      selector:
+        text:
+    weight_min:
+      name: Lowest weight
+      description: Weighings at or below this belong to somebody else.
+      selector:
+        number:
+          min: 0
+          max: 250
+          step: 0.5
+          unit_of_measurement: kg
+          mode: box
+    weight_max:
+      name: Highest weight
+      description: >-
+        Weighings at or above this belong to somebody else. Leave a gap
+        between one person's range and the next: a weighing that lands in the
+        gap belongs to nobody and is ignored, which is better than assigning
+        it to whoever is nearest.
+      selector:
+        number:
+          min: 0
+          max: 250
+          step: 0.5
+          unit_of_measurement: kg
+          mode: box
+    min_quality:
+      name: Lowest quality to accept
+      description: >-
+        0 accepts everything. A weighing that never settled is published with
+        a quality of at most 50, so 51 accepts only settled ones - at the
+        price of ignoring people who cannot stand still.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+    max_age:
+      name: Ignore weighings older than this
+      description: >-
+        The state topic is retained, so Home Assistant receives the last
+        weighing again every time it restarts. Without this you would get one
+        notification per restart about a weighing from days ago.
+      default: 120
+      selector:
+        number:
+          min: 10
+          max: 3600
+          unit_of_measurement: seconds
+          mode: box
+    actions:
+      name: Actions
+      description: What to do. The weighing is in trigger.payload_json.
+      selector:
+        action:
+
+mode: single
+
+variables:
+  weight_min: !input weight_min
+  weight_max: !input weight_max
+  min_quality: !input min_quality
+  max_age: !input max_age
+
+triggers:
+  - trigger: mqtt
+    topic: !input topic
+
+conditions:
+  - condition: template
+    value_template: >-
+      {{ weight_min < trigger.payload_json.weight | float(0) < weight_max }}
+  - condition: template
+    value_template: >-
+      {{ trigger.payload_json.quality | int(0) >= min_quality }}
+  - condition: template
+    value_template: >-
+      {{ (now() - as_datetime(trigger.payload_json.timestamp)).total_seconds()
+         < max_age }}
+
+actions: !input actions

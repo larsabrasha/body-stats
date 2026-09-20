@@ -171,3 +171,32 @@ band they happen to fit and is recorded as that person: weight alone cannot
 identify anybody. And a growing child walks up through the bands, so the
 boundaries need moving apart every so often — check them whenever a trend
 line does something surprising.
+
+## One automation per person, without repeating yourself
+
+`deploy/home-assistant/weighing-in-range.yaml` is a blueprint: write the
+pattern once, then create one automation per person from it in the UI, filling
+in that person's weight range and what should happen.
+
+Copy it onto the Home Assistant machine:
+
+```bash
+scp deploy/home-assistant/weighing-in-range.yaml \
+    root@homeassistant.local:/config/blueprints/automation/wiiscale/
+```
+
+Create the directory first if it does not exist. Then Settings → Automations
+→ Blueprints → *Create automation*, pick it, and fill in the range.
+
+It triggers on the MQTT message rather than on the weight sensor, which
+matters more than it looks. The weight and the timestamp are two entities
+reading the same message; Home Assistant updates them in no guaranteed order,
+so an automation triggered on one and reading the other can report the
+*previous* weighing. Reading the payload directly cannot race with itself, and
+`trigger.payload_json` carries every field — `weight`, `quality`, `stable`,
+`spread`, `timestamp` and the rest.
+
+The blueprint also asks how old a weighing may be, defaulting to two minutes.
+The state topic is retained so that entities survive a restart, which means
+Home Assistant receives the last weighing again on every restart — without the
+age check you would get a notification about a days-old weighing each time.
