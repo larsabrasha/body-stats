@@ -196,6 +196,11 @@ so an automation triggered on one and reading the other can report the
 `trigger.payload_json` carries every field — `weight`, `quality`, `stable`,
 `spread`, `timestamp` and the rest.
 
+The message is built for you. An automation's actions can use `{{ message }}`
+— "Lars: 106.19 kg", or just "106.19 kg" when you leave the name empty — as
+well as `{{ person }}`, `{{ weight }}` and `{{ quality }}` separately, and
+`{{ trigger.payload_json }}` for anything else in the weighing.
+
 The blueprint also asks how old a weighing may be, defaulting to two minutes.
 The state topic is retained so that entities survive a restart, which means
 Home Assistant receives the last weighing again on every restart — without the

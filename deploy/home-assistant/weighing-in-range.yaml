@@ -14,6 +14,14 @@ blueprint:
   author: wiiscale
   source_url: https://github.com/larsabrasha/body-stats/blob/main/deploy/home-assistant/weighing-in-range.yaml
   input:
+    person:
+      name: Who this is
+      description: >-
+        Used to build the ready-made message. Leave it empty for a bare
+        weight.
+      default: ""
+      selector:
+        text:
     topic:
       name: State topic
       description: >-
@@ -73,7 +81,10 @@ blueprint:
           mode: box
     actions:
       name: Actions
-      description: What to do. The weighing is in trigger.payload_json.
+      description: >-
+        What to do. Ready-made variables: {{ message }} ("Lars: 106.19 kg"),
+        {{ person }}, {{ weight }}, {{ quality }}. The whole weighing is in
+        {{ trigger.payload_json }} if you want a field these leave out.
       selector:
         action:
 
@@ -84,6 +95,14 @@ variables:
   weight_max: !input weight_max
   min_quality: !input min_quality
   max_age: !input max_age
+  person: !input person
+  # Rendered when the automation runs, so the trigger's payload is in scope.
+  # Reading it from here rather than from the weight entity is what keeps a
+  # notification from reporting the previous weighing.
+  weight: "{{ trigger.payload_json.weight }}"
+  quality: "{{ trigger.payload_json.quality }}"
+  message: >-
+    {{ (person ~ ': ') if person else '' }}{{ trigger.payload_json.weight }} kg
 
 triggers:
   - trigger: mqtt
