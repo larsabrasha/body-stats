@@ -22,6 +22,14 @@ blueprint:
       default: ""
       selector:
         text:
+    title:
+      name: Title
+      description: >-
+        For notifications that have one. Kept separate from the message so
+        the same blueprint can be used in a language other than this file's.
+      default: Weighing done
+      selector:
+        text:
     topic:
       name: State topic
       description: >-
@@ -82,8 +90,9 @@ blueprint:
     actions:
       name: Actions
       description: >-
-        What to do. Ready-made variables: {{ message }} ("Lars: 106.19 kg"),
-        {{ person }}, {{ weight }}, {{ quality }}. The whole weighing is in
+        What to do. Ready-made variables: {{ title }} and {{ message }}
+        ("Lars: 106.19 kg"), plus {{ person }}, {{ weight }} and
+        {{ quality }} separately. The whole weighing is in
         {{ trigger.payload_json }} if you want a field these leave out.
       selector:
         action:
@@ -96,6 +105,7 @@ variables:
   min_quality: !input min_quality
   max_age: !input max_age
   person: !input person
+  title: !input title
   # Rendered when the automation runs, so the trigger's payload is in scope.
   # Reading it from here rather than from the weight entity is what keeps a
   # notification from reporting the previous weighing.
