@@ -1,0 +1,11 @@
+# hid-wiimote allocates about 1 MB of physically contiguous memory each time
+# the board connects (an order-8 allocation). On a machine that has been busy
+# for a while that block may not exist, and the probe fails with
+# "Can't alloc device" / error -12: the board is connected but no input
+# device appears, and nothing retries. The board reconnects for every
+# weighing, so this has to be handled every time, not once.
+#
+# Hand the device to a systemd unit rather than RUN+=: the fix waits and
+# compacts memory, and udev kills anything that runs that long.
+ACTION=="add", SUBSYSTEM=="hid", ENV{HID_ID}=="0005:0000057E:00000306", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}+="wiiscale-hid-rebind@%k.service"

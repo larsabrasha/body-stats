@@ -1,0 +1,10 @@
+[Unit]
+# Started by 90-wiiscale.rules for each connection of the board; the instance
+# is the HID device name, e.g. 0005:057E:0306.0001. See hid-rebind.sh.
+Description=Retry the Wii Balance Board driver if it ran out of memory (%I)
+Documentation=https://github.com/larsabrasha/body-stats
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/wiiscale/hid-rebind.sh %I
+TimeoutStartSec=60

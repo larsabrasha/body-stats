@@ -96,6 +96,14 @@ install -m 0755 "$REPO_DIR/deploy/keep-connectable.sh" \
     /usr/local/lib/wiiscale/keep-connectable.sh
 install -m 0644 "$REPO_DIR/deploy/wiiscale-connectable.service" \
     /etc/systemd/system/wiiscale-connectable.service
+# hid-wiimote needs ~1 MB of contiguous memory per connection, and on a busy
+# machine the probe fails with error -12 and is never retried. This rule
+# retries it after compacting memory. See deploy/hid-rebind.sh.
+install -m 0755 "$REPO_DIR/deploy/hid-rebind.sh" /usr/local/lib/wiiscale/hid-rebind.sh
+install -m 0644 "$REPO_DIR/deploy/wiiscale-hid-rebind@.service" \
+    /etc/systemd/system/wiiscale-hid-rebind@.service
+install -m 0644 "$REPO_DIR/deploy/90-wiiscale.rules" /etc/udev/rules.d/90-wiiscale.rules
+udevadm control --reload
 systemctl daemon-reload
 systemctl enable wiiscale.service
 if command -v btmgmt >/dev/null; then

@@ -50,6 +50,14 @@ connect 34:AF:2C:E4:EA:C5
 quit
 ```
 
+Do not skip `connect`, and do not let the board leave pairing mode before it
+succeeds. `pair` alone reports success and leaves the device `Paired: yes`,
+but the board keeps calling whichever host it last *connected* to. Moving
+from a dead Pi to another machine, the power button lit the LED, blinked and
+gave up, and a capture on the new host showed not a single connection
+request: the board was calling the Pi. `bluetoothctl remove`, then the whole
+sequence again with `connect` straight after `pair`, fixed it.
+
 One thing does not survive a reboot on its own. The adapter has to be page
 scanning for the board's call to be heard at all, and that is runtime state
 that `bluetoothd` does not restore:
@@ -80,6 +88,35 @@ button works from here on.
 
 `ClassicBondedOnly` did not need touching. Leave it alone unless `connect`
 fails with `Connection reset by peer`.
+
+### Connected, but no input device
+
+On a machine that runs other things - verified on an Ubuntu 24.04 desktop
+that is also a home server - the board can connect, show `Connected: yes`,
+and still never get an `event*` device. The kernel log says why:
+
+```
+page allocation failure: order:8, mode:0x40dc0(GFP_KERNEL|__GFP_COMP|__GFP_ZERO)
+wiimote 0005:057E:0306.0001: Can't alloc device
+wiimote: probe of 0005:057E:0306.0001 failed with error -12
+```
+
+`hid-wiimote` allocates about 1 MB of *physically contiguous* memory for every
+connection. A busy machine can have gigabytes available and no single free
+1 MB block, and the probe is never retried. A Pi that runs nothing else never
+hits this; anything else will, sooner or later, and the board reconnects for
+every weighing.
+
+`deploy/install.sh` installs a udev rule (`90-wiiscale.rules`) that starts
+`wiiscale-hid-rebind@<device>.service` for each connection. If the driver has
+not bound after three seconds it compacts memory and binds it by hand, and
+only if that is not enough drops the page cache and tries again. What it did
+is in `journalctl -t wiiscale-hid-rebind`. To do the same by hand:
+
+```bash
+echo 1 | sudo tee /proc/sys/vm/compact_memory
+echo -n 0005:057E:0306.0001 | sudo tee /sys/bus/hid/drivers/wiimote/bind
+```
 
 ## If you are on trixie
 
